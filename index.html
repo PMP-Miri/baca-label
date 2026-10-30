@@ -6,8 +6,9 @@
   <title>Detektif Label: Bongkar Gula Tersembunyi</title>
   
   <!-- MediaPipe Libraries untuk Hand Tracking -->
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <!-- Versi dikunci supaya kemas kini CDN tidak memecahkan permainan semasa program -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
 
   <style>
     :root {
@@ -272,6 +273,39 @@
       background: rgba(255, 255, 255, 0.25);
     }
 
+    /* Petunjuk cara memilih bila kursor berada atas kotak */
+    .answer-zone.active-hover::after {
+      content: "Klik / sentuh untuk pilih";
+      position: absolute;
+      top: 10px;
+      right: 12px;
+      background: rgba(15, 23, 42, 0.85);
+      color: #fde68a;
+      font-size: 0.78rem;
+      font-weight: 800;
+      padding: 4px 10px;
+      border-radius: 999px;
+      pointer-events: none;
+    }
+    body.mod-kamera .answer-zone.active-hover::after {
+      content: "✊ Genggam / 🤏 Cubit untuk pilih";
+    }
+    .answer-zone.sedang-genggam {
+      transform: scale(0.98);
+      border-color: #facc15;
+    }
+    .answer-zone.sedang-genggam::after {
+      content: "Tahan...";
+    }
+    body.mod-kamera .answer-zone.sedang-genggam::after {
+      content: "Tahan genggaman...";
+    }
+
+    .btn-primary.active-hover {
+      outline: 4px solid #facc15;
+      outline-offset: 4px;
+    }
+
     .zone-badge {
       display: inline-block;
       padding: 4px 10px;
@@ -320,6 +354,7 @@
 
     /* Kursor Tangan */
     #hand-cursor {
+      --p: 0;
       position: fixed;
       width: 46px;
       height: 46px;
@@ -328,11 +363,12 @@
       background: rgba(56, 189, 248, 0.28);
       transform: translate(-50%, -50%);
       pointer-events: none;
-      z-index: 100;
+      z-index: 400; /* di atas modal (300) supaya boleh tekan "Main Lagi" dengan tangan */
       display: flex;
       align-items: center;
       justify-content: center;
       box-shadow: 0 0 16px rgba(56, 189, 248, 0.85);
+      transition: width 0.12s, height 0.12s, opacity 0.2s, border-color 0.12s, background-color 0.12s;
     }
 
     #hand-cursor::after {
@@ -341,6 +377,51 @@
       height: 10px;
       background: #ffffff;
       border-radius: 50%;
+    }
+
+    /* Cincin progres genggaman */
+    #hand-cursor::before {
+      content: "";
+      position: absolute;
+      inset: -10px;
+      border-radius: 50%;
+      background: conic-gradient(#facc15 calc(var(--p) * 1turn), transparent 0);
+      -webkit-mask: radial-gradient(circle, transparent 58%, #000 60%);
+      mask: radial-gradient(circle, transparent 58%, #000 60%);
+    }
+
+    /* Tangan sedang genggam / cubit */
+    #hand-cursor.genggam {
+      width: 34px;
+      height: 34px;
+      border-color: #facc15;
+      background: rgba(250, 204, 21, 0.55);
+      box-shadow: 0 0 18px rgba(250, 204, 21, 0.9);
+    }
+
+    /* Tangan tidak dikesan / jari menghala ke bawah: kursor pudar, tiada apa boleh dipilih */
+    #hand-cursor.pasif {
+      opacity: 0.25;
+      box-shadow: none;
+    }
+
+    #hand-cursor.tersembunyi {
+      opacity: 0;
+    }
+
+    #debug-gestur {
+      position: fixed;
+      left: 8px;
+      bottom: 8px;
+      z-index: 500;
+      background: rgba(0, 0, 0, 0.75);
+      color: #a7f3d0;
+      font: 12px/1.4 ui-monospace, Menlo, monospace;
+      padding: 6px 10px;
+      border-radius: 8px;
+      white-space: pre;
+      pointer-events: none;
+      display: none;
     }
 
     /* Notifikasi Maklum Balas */
@@ -471,6 +552,9 @@
   <!-- Kursor Tangan -->
   <div id="hand-cursor"></div>
 
+  <!-- Paparan nilai gestur untuk pelarasan (buka dengan index.html#debug) -->
+  <div id="debug-gestur"></div>
+
   <!-- Antaramuka Utama -->
   <div id="game-layer">
     <div class="top-bar">
@@ -519,7 +603,7 @@
         </div>
 
         <div class="question-prompt">
-          Halakan tapak tangan terus ke kotak penilaian yang betul di bawah:
+          Halakan tangan ke kotak yang betul di bawah, kemudian GENGGAM atau CUBIT untuk pilih:
         </div>
       </div>
     </div>
@@ -571,7 +655,7 @@
       <p style="color: #cbd5e1;">Skor Keseluruhan Anda:</p>
       <div class="modal-score" id="final-score">100 / 100</div>
       <p id="final-message" style="color: #e2e8f0; line-height: 1.5;"></p>
-      <button class="btn-primary" onclick="resetGame()">Main Lagi (Pemain Seterusnya)</button>
+      <button class="btn-primary" id="btn-main-lagi" onclick="resetGame()">Main Lagi (Pemain Seterusnya)</button>
     </div>
   </div>
 
@@ -773,7 +857,10 @@
     let currentIndex = 0;
     let score = 0;
     let isProcessingFeedback = false;
-    let activeControlMode = "Sentuhan / Tetikus";
+    let feedbackTimer = null;
+    const MOD_KAMERA = "Kamera (Genggam/Cubit)";
+    const MOD_SENTUH = "Sentuhan / Tetikus";
+    let activeControlMode = MOD_SENTUH;
 
     // Koordinat Kursor
     let targetX = window.innerWidth / 2;
@@ -781,10 +868,40 @@
     let currentX = targetX;
     let currentY = targetY;
 
-    // Masa Tahan (Dwell Time = 0.85 saat supaya pemain sempat pastikan pilihan)
-    const DWELL_DURATION = 850;
-    let activeZoneEl = null;
-    let dwellStartTime = 0;
+    // --- TETAPAN GESTUR (laras di sini jika perlu; buka index.html#debug untuk lihat nilai) ---
+    const GESTUR = {
+      TAHAN_MS: 400,        // genggaman mesti ditahan selama ini atas kotak yang sama baru dikira pilih
+      CUBIT_TUTUP: 0.35,    // jarak ibu jari–telunjuk / saiz tapak tangan: bawah ini = cubit
+      CUBIT_BUKA: 0.55,     // atas ini = cubit dilepaskan (histeresis supaya tidak berkelip)
+      GENGGAM_TUTUP: 3,     // berapa jari (daripada 4) mesti bengkok untuk dikira genggam
+      GENGGAM_BUKA: 1,      // bengkok <= ini = tangan terbuka semula
+      TEGAK_MIN: 0.2,       // jari mesti menghala ke atas (bukan tangan terkulai ke bawah)
+      HILANG_MS: 250,       // tiada tangan selama ini = tangan dianggap hilang
+      LEPAS_PX: 40,         // kursor boleh tergelincir sebanyak ini semasa genggam tanpa batal
+      // Kawasan bingkai kamera yang dipetakan ke seluruh skrin, supaya kotak bawah
+      // boleh dicapai tanpa menurunkan tangan sampai ke hujung bingkai kamera.
+      PETA_X: [0.10, 0.90],
+      PETA_Y: [0.08, 0.82]
+    };
+
+    // Keadaan tangan terkini (dikemas kini oleh MediaPipe)
+    const tangan = {
+      ada: false,        // tangan dikesan dalam bingkai terakhir
+      masa: 0,           // performance.now() bingkai terakhir tangan dikesan
+      tutup: false,      // sedang genggam atau cubit (selepas histeresis)
+      cubitTutup: false,
+      genggamTutup: false,
+      tegak: false,
+      nilai: { cubit: 0, bengkok: 0, tegak: 0 }
+    };
+
+    // Mesin keadaan pilihan
+    let hoverEl = null;          // elemen di bawah kursor
+    let genggamEl = null;        // elemen yang sedang digenggam (dikunci semasa genggaman bermula)
+    let genggamMula = 0;
+    let tutupSebelum = false;    // keadaan tutup pada bingkai gelung sebelumnya
+    let tanganSebelum = false;   // tangan aktif pada bingkai gelung sebelumnya
+    let perluLepas = false;      // selepas memilih, tangan mesti dibuka dulu sebelum pilihan seterusnya
 
     // Elemen DOM
     const cursorEl = document.getElementById('hand-cursor');
@@ -812,11 +929,17 @@
     }
 
     function resetGame() {
+      // Batalkan maklum balas yang masih berjalan. Tanpa ini, menekan "Mula Semula"
+      // semasa toast dipapar akan melangkau soalan pertama pemain baru.
+      if (feedbackTimer) { clearTimeout(feedbackTimer); feedbackTimer = null; }
+      toastEl.classList.remove('show');
       questions = shuffleQuestions();
       currentIndex = 0;
       score = 0;
+      activeControlMode = MOD_SENTUH;
       scoreValEl.textContent = score;
       endModalEl.style.display = 'none';
+      perluLepas = true; // pemain yang tekan "Main Lagi" dengan genggaman mesti lepas dulu
       loadCurrentLabel();
     }
 
@@ -838,64 +961,164 @@
       qCounterEl.textContent = `${currentIndex + 1} / ${questions.length}`;
     }
 
+    const btnMainLagi = document.getElementById('btn-main-lagi');
+
+    // Elemen yang boleh dipilih pada saat ini
+    function sasaranAktif() {
+      if (reportModalEl.style.display === 'flex') return [];
+      if (endModalEl.style.display === 'flex') return [btnMainLagi];
+      if (isProcessingFeedback) return [];
+      return [...answerZones];
+    }
+
+    function dalamRect(el, x, y, margin) {
+      const r = el.getBoundingClientRect();
+      return x >= r.left - margin && x <= r.right + margin &&
+             y >= r.top - margin && y <= r.bottom + margin;
+    }
+
+    function cariSasaran(senarai, x, y) {
+      for (const el of senarai) {
+        if (dalamRect(el, x, y, 0)) return el;
+      }
+      return null;
+    }
+
+    function tanganAktif(now) {
+      return tangan.ada && (now - tangan.masa) < GESTUR.HILANG_MS;
+    }
+
+    function setProgres(el, p) {
+      cursorEl.style.setProperty('--p', p.toFixed(3));
+      if (el) {
+        const bar = el.querySelector && el.querySelector('.dwell-bar-fill');
+        if (bar) bar.style.width = `${Math.round(p * 100)}%`;
+      }
+    }
+
+    function batalGenggam() {
+      if (genggamEl) genggamEl.classList.remove('sedang-genggam');
+      genggamEl = null;
+      setProgres(null, 0);
+      answerZones.forEach(z => {
+        const bar = z.querySelector('.dwell-bar-fill');
+        if (bar) bar.style.width = '0%';
+      });
+    }
+
+    function setHover(el) {
+      if (hoverEl === el) return;
+      if (hoverEl) hoverEl.classList.remove('active-hover');
+      hoverEl = el;
+      if (hoverEl) {
+        hoverEl.classList.add('active-hover');
+        playSound('hover');
+      }
+    }
+
+    function pilih(el, mod) {
+      activeControlMode = mod;
+      batalGenggam();
+      setHover(null);
+      if (el === btnMainLagi) {
+        resetGame();
+      } else if (el && el.dataset.zone) {
+        evaluateAnswer(el.dataset.zone);
+      }
+    }
+
     // Gelung Animasi Utama (60fps)
     function updateLoop(timestamp) {
+      const now = performance.now();
       currentX += (targetX - currentX) * 0.35;
       currentY += (targetY - currentY) * 0.35;
 
       cursorEl.style.left = `${currentX}px`;
       cursorEl.style.top = `${currentY}px`;
 
-      if (!isProcessingFeedback && endModalEl.style.display !== 'flex' && reportModalEl.style.display !== 'flex') {
-        let hoveredZone = null;
-        answerZones.forEach(zone => {
-          const rect = zone.getBoundingClientRect();
-          if (
-            currentX >= rect.left &&
-            currentX <= rect.right &&
-            currentY >= rect.top &&
-            currentY <= rect.bottom
-          ) {
-            hoveredZone = zone;
-          }
-        });
+      const kamera = document.body.classList.contains('mod-kamera');
+      const adaTangan = tanganAktif(now);
+      const sasaran = sasaranAktif();
 
-        if (hoveredZone) {
-          if (activeZoneEl !== hoveredZone) {
-            clearAllZones();
-            activeZoneEl = hoveredZone;
-            activeZoneEl.classList.add('active-hover');
-            dwellStartTime = timestamp;
-            playSound('hover');
+      if (kamera) {
+        // Tangan baru muncul semula: ambil keadaan semasa tanpa kira sebagai "genggam baru".
+        // Ini menghalang tangan yang masuk bingkai dalam keadaan tergenggam daripada terus memilih.
+        if (adaTangan && !tanganSebelum) tutupSebelum = tangan.tutup;
+
+        const boleh = adaTangan && tangan.tegak;
+        const tutup = adaTangan && tangan.tutup;
+
+        cursorEl.classList.toggle('tersembunyi', !adaTangan);
+        cursorEl.classList.toggle('pasif', adaTangan && !tangan.tegak);
+        cursorEl.classList.toggle('genggam', tutup);
+
+        // Tangan dibuka (atau hilang): sedia untuk pilihan seterusnya
+        if (!tutup) {
+          perluLepas = false;
+          if (genggamEl) batalGenggam();
+        }
+
+        // Highlight hanya bila tangan aktif dan tegak. Tangan terkulai / hilang tidak menyala apa-apa.
+        setHover(boleh ? (genggamEl || cariSasaran(sasaran, currentX, currentY)) : null);
+
+        // Genggaman BARU (terbuka -> tutup) atas sesuatu kotak
+        if (boleh && tutup && !tutupSebelum && !perluLepas && !genggamEl && hoverEl) {
+          genggamEl = hoverEl;
+          genggamMula = now;
+          genggamEl.classList.add('sedang-genggam');
+        }
+
+        if (genggamEl) {
+          const masihSah = boleh && tutup && sasaran.includes(genggamEl) &&
+                           dalamRect(genggamEl, currentX, currentY, GESTUR.LEPAS_PX);
+          if (!masihSah) {
+            // Tergelincir keluar kotak / tangan terkulai: batal, perlu buka & genggam semula
+            batalGenggam();
+            perluLepas = tutup;
           } else {
-            const elapsed = timestamp - dwellStartTime;
-            const progress = Math.min(100, (elapsed / DWELL_DURATION) * 100);
-            const barFill = activeZoneEl.querySelector('.dwell-bar-fill');
-            if (barFill) barFill.style.width = `${progress}%`;
-
-            if (elapsed >= DWELL_DURATION) {
-              evaluateAnswer(activeZoneEl.dataset.zone);
-              clearAllZones();
+            const p = Math.min(1, (now - genggamMula) / GESTUR.TAHAN_MS);
+            setProgres(genggamEl, p);
+            if (p >= 1) {
+              perluLepas = true;
+              pilih(genggamEl, MOD_KAMERA);
             }
           }
-        } else {
-          clearAllZones();
         }
+
+        tutupSebelum = tutup;
+        tanganSebelum = adaTangan;
+      } else {
+        // Mod tetikus / sentuhan: hover hanya menyala; pilihan dibuat dengan klik / sentuh
+        cursorEl.classList.remove('tersembunyi', 'pasif', 'genggam');
+        setHover(cariSasaran(sasaran, currentX, currentY));
+      }
+
+      if (!sasaran.length) setHover(null);
+      if (debugEl) {
+        debugEl.textContent =
+          `tangan: ${adaTangan ? 'ya' : 'tiada'}  tegak: ${tangan.nilai.tegak.toFixed(2)} (${tangan.tegak ? 'ok' : 'tidak'})\n` +
+          `cubit: ${tangan.nilai.cubit.toFixed(2)} (${tangan.cubitTutup ? 'TUTUP' : 'buka'})  ` +
+          `jari bengkok: ${tangan.nilai.bengkok}/4 (${tangan.genggamTutup ? 'TUTUP' : 'buka'})\n` +
+          `perluLepas: ${perluLepas}  genggam: ${genggamEl ? (genggamEl.dataset.zone || 'butang') : '-'}`;
       }
 
       requestAnimationFrame(updateLoop);
     }
 
     function clearAllZones() {
-      activeZoneEl = null;
-      answerZones.forEach(z => {
-        z.classList.remove('active-hover');
-        const bar = z.querySelector('.dwell-bar-fill');
-        if (bar) bar.style.width = '0%';
-      });
+      batalGenggam();
+      setHover(null);
     }
 
+    // Klik / sentuh terus pada kotak (mod tanpa kamera, atau pegawai guna tetikus)
+    answerZones.forEach(zone => {
+      zone.addEventListener('click', () => {
+        if (sasaranAktif().includes(zone)) pilih(zone, MOD_SENTUH);
+      });
+    });
+
     function evaluateAnswer(selectedCategory) {
+      if (isProcessingFeedback) return; // elak dua pilihan untuk satu soalan
       isProcessingFeedback = true;
       const item = questions[currentIndex];
       const isCorrect = selectedCategory === item.category;
@@ -917,7 +1140,8 @@
       fbFactEl.textContent = `${item.name}: ${item.fact}`;
       toastEl.classList.add('show');
 
-      setTimeout(() => {
+      feedbackTimer = setTimeout(() => {
+        feedbackTimer = null;
         toastEl.classList.remove('show');
         currentIndex++;
         loadCurrentLabel();
@@ -1038,12 +1262,30 @@
     }
 
     // --- 5. KAWALAN SENTUHAN SKRIN & TETIKUS (FALLBACK) ---
+    const debugEl = /debug/i.test(location.hash + location.search)
+      ? document.getElementById('debug-gestur') : null;
+    if (debugEl) debugEl.style.display = 'block';
+
+    // Bila tangan sedang dikesan, abaikan gerakan tetikus (elak kursor melompat di laptop booth)
+    function bolehGunaPenunjuk() {
+      return !tanganAktif(performance.now());
+    }
+
     window.addEventListener('pointermove', (e) => {
+      if (!bolehGunaPenunjuk()) return;
       targetX = e.clientX;
       targetY = e.clientY;
     });
 
+    window.addEventListener('pointerdown', (e) => {
+      if (!bolehGunaPenunjuk()) return;
+      // Untuk sentuhan, letak kursor terus di tempat jari supaya highlight betul
+      targetX = currentX = e.clientX;
+      targetY = currentY = e.clientY;
+    });
+
     window.addEventListener('touchmove', (e) => {
+      if (!bolehGunaPenunjuk()) return;
       if (e.touches.length > 0) {
         targetX = e.touches[0].clientX;
         targetY = e.touches[0].clientY;
@@ -1054,13 +1296,77 @@
     const videoElement = document.getElementById('webcam-video');
     const camStatusEl = document.getElementById('cam-status');
 
-    function onResults(results) {
-      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-        activeControlMode = "Kamera (Hand Tracking)";
-        const palmCenter = results.multiHandLandmarks[0][9];
-        targetX = (1 - palmCenter.x) * window.innerWidth;
-        targetY = palmCenter.y * window.innerHeight;
+    // Jarak 3D. worldLandmarks dalam meter (tidak terjejas oleh nisbah bingkai);
+    // jika tiada, guna landmark biasa dengan pembetulan nisbah 4:3.
+    function jarak3(a, b, sx) {
+      return Math.hypot((a.x - b.x) * sx, a.y - b.y, (a.z - b.z) * sx);
+    }
+
+    // Kira nilai gestur daripada 21 titik tangan MediaPipe:
+    // 0 pergelangan, 4 hujung ibu jari, 8 hujung telunjuk, 9 pangkal jari hantu,
+    // (hujung, sendi tengah) = (8,6) (12,10) (16,14) (20,18)
+    function kiraGestur(L, W) {
+      const P = W || L;
+      const sx = W ? 1 : (640 / 480);
+      const saiz = jarak3(P[0], P[9], sx) || 1e-6;
+
+      const cubit = jarak3(P[4], P[8], sx) / saiz;
+
+      let bengkok = 0;
+      for (const [hujung, sendi] of [[8, 6], [12, 10], [16, 14], [20, 18]]) {
+        if (jarak3(P[hujung], P[0], sx) < jarak3(P[sendi], P[0], sx)) bengkok++;
       }
+
+      // Arah pergelangan -> pangkal jari dalam imej (y ke bawah). +1 = jari tegak ke atas,
+      // 0 = mendatar, -1 = terkulai ke bawah.
+      const dx = (L[9].x - L[0].x) * (640 / 480);
+      const dy = L[0].y - L[9].y;
+      const tegak = dy / (Math.hypot(dx, dy) || 1e-6);
+
+      return { cubit, bengkok, tegak };
+    }
+
+    function petaKeSkrin(v, [a, b]) {
+      return Math.min(1, Math.max(0, (v - a) / (b - a)));
+    }
+
+    function onResults(results) {
+      const ada = results.multiHandLandmarks && results.multiHandLandmarks.length > 0;
+      if (!ada) {
+        tangan.ada = false;
+        tangan.tutup = tangan.cubitTutup = tangan.genggamTutup = false;
+        return;
+      }
+
+      const L = results.multiHandLandmarks[0];
+      const W = results.multiHandWorldLandmarks && results.multiHandWorldLandmarks[0];
+      const g = kiraGestur(L, W);
+      const baruMuncul = !tanganAktif(performance.now());
+
+      tangan.nilai = g;
+      tangan.ada = true;
+      tangan.masa = performance.now();
+      tangan.tegak = g.tegak >= GESTUR.TEGAK_MIN;
+
+      if (baruMuncul) {
+        tangan.cubitTutup = g.cubit < GESTUR.CUBIT_TUTUP;
+        tangan.genggamTutup = g.bengkok >= GESTUR.GENGGAM_TUTUP;
+      } else {
+        // Histeresis: ambang tutup dan buka berbeza supaya tidak berkelip antara dua keadaan
+        if (g.cubit < GESTUR.CUBIT_TUTUP) tangan.cubitTutup = true;
+        else if (g.cubit > GESTUR.CUBIT_BUKA) tangan.cubitTutup = false;
+        if (g.bengkok >= GESTUR.GENGGAM_TUTUP) tangan.genggamTutup = true;
+        else if (g.bengkok <= GESTUR.GENGGAM_BUKA) tangan.genggamTutup = false;
+      }
+      tangan.tutup = tangan.cubitTutup || tangan.genggamTutup;
+
+      // Kursor ikut purata pergelangan + pangkal jari (0,5,9,13,17). Titik-titik ini hampir
+      // tidak bergerak bila jari digenggam, jadi kursor tidak melompat semasa memilih.
+      let px = 0, py = 0;
+      for (const i of [0, 5, 9, 13, 17]) { px += L[i].x; py += L[i].y; }
+      px /= 5; py /= 5;
+      targetX = (1 - petaKeSkrin(px, GESTUR.PETA_X)) * window.innerWidth;
+      targetY = petaKeSkrin(py, GESTUR.PETA_Y) * window.innerHeight;
     }
 
     async function initCamera() {
@@ -1087,7 +1393,8 @@
         });
 
         await camera.start();
-        camStatusEl.textContent = "Kamera Aktif: Halakan tapak tangan terus ke kotak jawapan di bawah. (Tiada video dirakam).";
+        document.body.classList.add('mod-kamera');
+        camStatusEl.textContent = "Kamera Aktif: Halakan tangan ke kotak, kemudian GENGGAM atau CUBIT untuk pilih. (Tiada video dirakam).";
         camStatusEl.style.color = "#38bdf8";
       } catch (err) {
         console.warn("Kamera tidak dapat diakses, menggunakan mod sentuhan/tetikus:", err);
